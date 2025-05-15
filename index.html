@@ -1,0 +1,260 @@
+<!DOCTYPE html><html><head><title>Dynamic Cursor-Responsive Gradient</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            width: 100%;
+            max-width: 1200px;
+            position: relative;
+            aspect-ratio: 16/9;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            backdrop-filter: blur(5px);
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+
+        input[type="range"] {
+            width: 180px;
+        }
+
+        button {
+            background: #444;
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+    </style>
+
+<base target="_self">
+
+
+    </head><body><div id="canvas-container"></div>
+    <div id="ui">
+        <div class="control-group">
+            <button id="resetZoom">Reset Zoom</button>
+        </div>
+        <div class="control-group">
+            <label><input type="checkbox" id="animate"> Animate</label>
+            <label><input type="checkbox" id="invert"> Invert Colors</label>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
+    <script>
+        if (!WebGLRenderingContext) {
+            document.getElementById('canvas-container').innerHTML = 
+                '<div style="color: white; text-align: center; padding: 20px;">WebGL not supported</div>';
+            throw new Error('WebGL not supported');
+        }
+
+        let renderer, scene, camera, material;
+        let mouse = new THREE.Vector2(0.5, 0.5);
+        let targetZoom = 1, currentZoom = 1;
+        let offset = new THREE.Vector2(0, 0);
+        const ZOOM_SPEED = 0.1;
+        const MAX_ZOOM = 8, MIN_ZOOM = 0.5;
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+            const aspectRatio = 16/9;
+            const width = Math.min(window.innerWidth, 1200);
+            const height = width / aspectRatio;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+
+            const geometry = new THREE.PlaneGeometry(2, 2);
+
+            const vertexShader = `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `;
+
+            const fragmentShader = `
+                precision highp float;
+                varying vec2 vUv;
+                uniform vec2 mouse;
+                uniform vec2 resolution;
+                uniform float time;
+                uniform float zoom;
+                uniform vec2 offset;
+                uniform bool animate;
+                uniform bool invert;
+
+                vec3 hueShift(vec3 color, float hue) {
+                    vec3 k = vec3(0.57735);
+                    float cosHue = cos(hue);
+                    return color * cosHue + cross(k, color) * sin(hue) + k * dot(k, color) * (1.0 - cosHue);
+                }
+
+                void main() {
+                    vec2 uv = (vUv - 0.5) * zoom + offset + 0.5;
+                    vec2 center = vec2(0.5);
+                    
+                    // Base gradient
+                    vec3 color = mix(
+                        vec3(0.8, 0.2, 0.4),
+                        vec3(0.2, 0.4, 0.8),
+                        smoothstep(-0.5, 1.5, uv.x + uv.y)
+                    );
+
+                    // Mouse influence
+                    float mouseDist = distance(uv, mouse);
+                    float mouseStrength = 1.0 - smoothstep(0.0, 0.5, mouseDist);
+                    color = hueShift(color, mouse.x * 3.0 * mouseStrength);
+
+                    // Animation
+                    if(animate) {
+                        color.r += sin(time + uv.x * 5.0) * 0.1;
+                        color.g += cos(time + uv.y * 3.0) * 0.1;
+                    }
+
+                    // Inversion
+                    if(invert) color = 1.0 - color;
+
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `;
+
+            material = new THREE.ShaderMaterial({
+                uniforms: {
+                    mouse: { value: mouse },
+                    time: { value: 0 },
+                    resolution: { value: new THREE.Vector2(width, height) },
+                    zoom: { value: 1 },
+                    offset: { value: offset },
+                    animate: { value: false },
+                    invert: { value: false }
+                },
+                vertexShader,
+                fragmentShader
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+
+            // Event listeners
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('wheel', onMouseWheel, { passive: false });
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('resetZoom').addEventListener('click', resetZoom);
+            document.getElementById('animate').addEventListener('change', toggleAnimate);
+            document.getElementById('invert').addEventListener('change', toggleInvert);
+
+            // Touch support
+            window.addEventListener('touchmove', onTouchMove, { passive: false });
+
+            animate();
+        }
+
+        function onMouseMove(e) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            material.uniforms.mouse.value.set(mouse.x, mouse.y);
+        }
+
+        function onTouchMove(e) {
+            e.preventDefault();
+            const rect = renderer.domElement.getBoundingClientRect();
+            const touch = e.touches[0];
+            mouse.x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+            material.uniforms.mouse.value.set(mouse.x, mouse.y);
+        }
+
+        function onMouseWheel(e) {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 1/ZOOM_SPEED : ZOOM_SPEED;
+            const zoomFactor = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, targetZoom * delta));
+
+            const rect = renderer.domElement.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left) / rect.width;
+            const mouseY = (e.clientY - rect.top) / rect.height;
+
+            offset.x += (mouseX - 0.5) * (1/currentZoom - 1/zoomFactor);
+            offset.y += (mouseY - 0.5) * (1/currentZoom - 1/zoomFactor);
+            
+            targetZoom = zoomFactor;
+        }
+
+        function resetZoom() {
+            targetZoom = 1;
+            offset.set(0, 0);
+        }
+
+        function toggleAnimate(e) {
+            material.uniforms.animate.value = e.target.checked;
+        }
+
+        function toggleInvert(e) {
+            material.uniforms.invert.value = e.target.checked;
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            const aspectRatio = 16/9;
+            const width = Math.min(window.innerWidth, 1200);
+            const height = width / aspectRatio;
+
+            renderer.setSize(width, height);
+            material.uniforms.resolution.value.set(width, height);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            currentZoom += (targetZoom - currentZoom) * 0.1;
+            material.uniforms.zoom.value = currentZoom;
+            material.uniforms.offset.value.copy(offset);
+            material.uniforms.time.value = performance.now() / 1000;
+            
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+
+              
+          
+                
+          
+              
+</body></html>
